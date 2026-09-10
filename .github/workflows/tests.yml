@@ -1,17 +1,20 @@
 name: "Tests"
 on:
-  pull_request:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: Test selector passed to the test runners
+        required: false
+        default: ''
 
 jobs:
   Test:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     strategy:
       matrix:
-        node_version: ['lts/*', 'node']
+        node_version: [14, 8]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
@@ -21,14 +24,52 @@ jobs:
           node-version: ${{ matrix.node_version }}
       - name: Install Dependencies
         run: npm ci
+      - name: Install Node 8-compatible Jasmine
+        if: matrix.node_version == 8
+        run: npm install --no-save --ignore-scripts jasmine@3.6.0
+      - name: Run Node 8 compatibility tests on Node 14
+        if: matrix.node_version == 8
+        run: |
+          export NVM_DIR="/home/runner/mynvm"
+          . "$NVM_DIR/nvm.sh"
+          nvm install 14
+          NODE14=$(nvm which 14)
+          NODE14_BIN=$(dirname "$NODE14")
+          echo "PATH=$NODE14_BIN:$PATH" >> "$GITHUB_ENV"
+          echo "NVM_BIN=$NODE14_BIN" >> "$GITHUB_ENV"
       - name: Run Unit Tests 👩🏽‍💻
-        run: npm run test:unit
+        run: |
+          if [ "${{ matrix.node_version }}" = "8" ]; then
+            export NVM_DIR="/home/runner/mynvm"
+            . "$NVM_DIR/nvm.sh"
+            nvm use 14
+          fi
+          npm run test:unit -- ${{ inputs.test-filter }}
       - name: Run Spec Tests 👩🏽‍💻
-        run: npm run test:specs
+        run: |
+          if [ "${{ matrix.node_version }}" = "8" ]; then
+            export NVM_DIR="/home/runner/mynvm"
+            . "$NVM_DIR/nvm.sh"
+            nvm use 14
+          fi
+          npm run test:specs -- ${{ inputs.test-filter }}
+      - name: Build and Pack
+        if: matrix.node_version == 14
+        run: |
+          npm run build
+          npm pack
+      - name: Upload Package
+        if: matrix.node_version == 14
+        uses: actions/upload-artifact@v4
+        with:
+          name: marked-2.0.6
+          path: marked-2.0.6.tgz
+          if-no-files-found: error
 
   Lint:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
@@ -37,34 +78,10 @@ jobs:
       - name: Lint ✨
         run: npm run test:lint
 
-  Release:
-    needs: [Test, Lint]
-    if: |
-      github.ref == 'refs/heads/master' &&
-      github.event.repository.fork == false
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-      - name: Install Dependencies
-        run: npm ci
-      - name: Build 🗜️
-        run: |
-          npm run build
-          if ! git diff --quiet; then
-            git config --global user.email "<>"
-            git config --global user.name "MarkedJS bot"
-            git commit -am "🗜️ build [skip ci]"
-          fi
-      - name: Release 🎉
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
-
   Skip:
     if: contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Skip CI 🚫
         run: echo skip ci
